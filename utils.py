@@ -35,16 +35,24 @@ def format_tableau(tableau, var_names, basic_vars, iteration,
     lines.append(hdr)
     lines.append('  ' + '-' * BW + '-+' + '-' * (CW * len(col_headers)))
 
+    def _fmt(v):
+        if abs(v) < 1e-9:
+            return '0'
+        if abs(v - round(v)) < 1e-6:
+            return str(int(round(v)))
+        return f'{v:.3f}'.rstrip('0')
+
     # ── Data rows ──
     for i, rh in enumerate(row_headers):
         row_vals = tableau[i]
         arr = ' <' if i == pivot_row else '  '
         line = f'  {rh:>{BW}} |'
         for j, val in enumerate(row_vals):
+            s = _fmt(val)
             if i == pivot_row and j == pivot_col:
-                cell = f'[{val:>6.3f}]'     # highlight pivot element
+                cell = f'[{s:>6}]'
             else:
-                cell = f' {val:>7.3f} '
+                cell = f' {s:>7} '
             line += cell
         line += arr
         lines.append(line)
