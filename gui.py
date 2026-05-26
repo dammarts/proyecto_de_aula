@@ -62,10 +62,11 @@ class AppGUI:
         self.last_solver = None
 
         # Example tab state
-        self.ex_solver   = None
-        self.ex_history  = []
-        self.ex_varnames = []
-        self.ex_iter     = 0
+        self.ex_solver    = None
+        self.ex_history   = []
+        self.ex_varnames  = []
+        self.ex_iter      = 0
+        self.ex_dual_text = None
 
         # LP solver extra state
         self.entries_rnames  = []
@@ -578,6 +579,16 @@ class AppGUI:
             body += utils.format_solution(x, Z, [f'x{i+1}' for i in range(n)],
                                           tipo, restricciones_nombres=rest_nombres,
                                           slacks=slacks)
+            # Dual / sensitivity analysis block
+            dual_vals = solver.get_dual_values()
+            sens_b    = solver.get_sensitivity_b()
+            sens_c    = solver.get_sensitivity_c()
+            body += utils.format_dual_analysis(
+                dual_vals, sens_b, sens_c,
+                b, c,
+                rest_nombres or [f'R{i+1}' for i in range(m)],
+                [f'x{i+1}' for i in range(n)],
+                tipo)
             self._write_output(self.out_text, body)
             if MPL:
                 if n == 2:
@@ -736,6 +747,16 @@ class AppGUI:
             wraplength=700, justify='left')
         self.ex_sol_lbl.pack(padx=12, pady=12, anchor='w')
 
+        # Dual / sensitivity analysis card
+        dual_card = self._card(parent, 'Analisis Dual y Sensibilidad')
+        dual_card.pack(fill='x', pady=(0, 6))
+
+        self.ex_dual_text = scrolledtext.ScrolledText(
+            dual_card, font=self.F_MONO, state='disabled',
+            bg=self.C_CODE_BG, fg=self.C_CODE_FG,
+            wrap='none', relief='flat', height=14)
+        self.ex_dual_text.pack(fill='both', expand=True, padx=6, pady=6)
+
         # Export button
         self._btn(parent, 'Exportar Resultados a .txt',
                   self._export_example, color='#4a148c').pack(pady=4, anchor='e', padx=4)
@@ -785,9 +806,24 @@ class AppGUI:
             self.ex_sol_lbl.configure(
                 text='\n'.join(sol_lines),
                 font=('Segoe UI', 10, 'bold'), fg=self.C_GREEN)
+
+            # Dual / sensitivity analysis
+            if self.ex_dual_text is not None:
+                dual_vals = solver.get_dual_values()
+                sens_b    = solver.get_sensitivity_b()
+                sens_c    = solver.get_sensitivity_c()
+                dual_txt  = utils.format_dual_analysis(
+                    dual_vals, sens_b, sens_c,
+                    p['b'], p['c'],
+                    p['restricciones_nombres'],
+                    [f'x{i+1}' for i in range(n)],
+                    p['tipo'])
+                self._write_output(self.ex_dual_text, dual_txt)
         else:
             self.ex_sol_lbl.configure(
                 text=f'Estado: {status}', fg=self.C_RED)
+            if self.ex_dual_text is not None:
+                self._write_output(self.ex_dual_text, '')
 
     # ── Navigation ─────────────────────────────────────────────────────────────
     def _show_ex_iter(self):
@@ -986,6 +1022,35 @@ class AppGUI:
              'Repetir pasos 5-7 hasta que la fila Z no tenga negativos (optimo). '
              'Si al final alguna variable artificial permanece en la base con '
              'valor > 0, el problema es INFACTIBLE (no existe solucion factible).'),
+            ('#4a148c', '9. Teoria de la Dualidad — Problema Dual',
+             'A todo problema Primal (MAX) le corresponde un problema Dual (MIN). '
+             'Si el Primal tiene m restricciones y n variables, el Dual tiene n '
+             'restricciones y m variables duales w1...wm. '
+             'En la solucion optima ambos tienen el mismo valor Z* = W* '
+             '(Teorema Fuerte de Dualidad). Las variables duales w* se leen '
+             'directamente del tableau final en la fila Z.'),
+            ('#4a148c', '10. Precios Sombra (Shadow Prices)',
+             'El precio sombra w_i de la restriccion i indica cuanto aumenta Z* '
+             'si se incrementa el lado derecho b_i en una unidad, manteniendo '
+             'la misma base optima.\n'
+             '— Recurso con holgura (s_i > 0): w_i = 0 (no es limitante).\n'
+             '— Recurso agotado (s_i = 0): w_i > 0 (es cuello de botella).\n'
+             'Lectura en tableau: para restriccion <=_k, w_k = fila Z en '
+             'columna s_k; para >= o =, w_k = fila Z en columna a_k + M.'),
+            ('#6a1b9a', '11. Analisis de Sensibilidad — Lado Derecho (b)',
+             'Rango de b_i en que la base actual sigue siendo optima (sin recalcular). '
+             'Se obtiene con la columna B^{-1} correspondiente del tableau final: '
+             'para cada fila r, b_r / (B^{-1})_{r,i} da el limite inferior o '
+             'superior segun el signo. Fuera del rango cambia la base optima '
+             'y habria que pivotar de nuevo.'),
+            ('#6a1b9a', '12. Analisis de Sensibilidad — Coeficientes objetivo (c)',
+             'Rango de c_j en que la base optima no cambia:\n'
+             '— Variable NO basica x_j: c_j puede bajar hasta -inf; '
+             'el limite superior es c_j + (fila Z en columna j).\n'
+             '— Variable basica x_j en fila r: calcular delta = T_Z,k / T_{r,k} '
+             'para todas las columnas no basicas k; el rango es '
+             '[c_j - min(delta>0), c_j - max(delta<0)]. '
+             'Fuera del rango, otra variable entraria a la base.'),
         ]
 
         for color, title, desc in steps:
@@ -1020,7 +1085,9 @@ class AppGUI:
                       f'{len(p["c"]) + n_leq + n_geq + (n_geq+n_eq) + 1} columnas.\n'
                       f'Solucion optima: x1=160, x2=0, x3=40, x4=0  =>  Z* = $1520/dia.\n'
                       f'Casos especiales detectados: ilimitado (sin fila pivote), '
-                      f'infactible (artificial en base), degenerado (empate en razon minima).',
+                      f'infactible (artificial en base), degenerado (empate en razon minima).\n'
+                      f'Analisis dual: precios sombra w*, rangos de sensibilidad para b y c '
+                      f'calculados automaticamente desde el tableau optimo (pasos 9-12).',
                  font=self.F_SMALL, fg='#5d4037', bg='#fff8e1',
                  wraplength=560, justify='left').pack(padx=12, pady=8)
 

@@ -76,6 +76,63 @@ def format_solution(x, Z, var_names_decision, tipo,
     return '\n'.join(lines)
 
 
+# ── Dual / Sensitivity formatter ──────────────────────────────────────────────
+
+def format_dual_analysis(dual_vals, sens_b, sens_c, b, c,
+                         constraint_names, var_names_decision, tipo):
+    """
+    Returns a formatted string with three analysis sections:
+      1. Shadow prices (dual variables w*)
+      2. Sensitivity ranges for RHS (b)
+      3. Sensitivity ranges for objective coefficients (c)
+    """
+    import numpy as np
+    sep  = '═' * 55
+    sep2 = '─' * 55
+    lines = ['\n' + sep,
+             '  ANALISIS DUAL Y SENSIBILIDAD',
+             sep, '']
+
+    # ── 1. Shadow prices ──
+    lines.append('  1. Precios Sombra (Variables Duales  w*)')
+    lines.append('  ' + sep2)
+    lines.append(f'  {"Restriccion":<30} {"w*":>8}   Interpretacion')
+    lines.append('  ' + sep2)
+    for i, (name, wi) in enumerate(zip(constraint_names, dual_vals)):
+        wi_clean = 0.0 if abs(wi) < 1e-6 else wi
+        if abs(wi_clean) < 1e-6:
+            interp = 'Recurso con holgura (no limitante)'
+        else:
+            sign_str = 'sube' if wi_clean > 0 else 'baja'
+            interp = f'+1 unidad -> Z {sign_str} ${abs(wi_clean):.4f}'
+        lines.append(f'  w{i+1} ({name:<26}) {wi_clean:>8.4f}   {interp}')
+
+    # ── 2. RHS sensitivity ──
+    lines.append('')
+    lines.append('  2. Rangos de Sensibilidad — Lado Derecho (b)')
+    lines.append('  ' + sep2)
+    lines.append(f'  {"Restriccion":<30} {"b actual":>9}  {"Rango valido"}')
+    lines.append('  ' + sep2)
+    for i, (name, (lo, hi)) in enumerate(zip(constraint_names, sens_b)):
+        lo_str = f'{lo:.2f}' if np.isfinite(lo) else '-inf'
+        hi_str = f'{hi:.2f}' if np.isfinite(hi) else '+inf'
+        lines.append(f'  b{i+1} ({name:<26}) {b[i]:>9.2f}  [{lo_str}, {hi_str}]')
+
+    # ── 3. Objective sensitivity ──
+    lines.append('')
+    lines.append('  3. Rangos de Sensibilidad — Funcion Objetivo (c)')
+    lines.append('  ' + sep2)
+    lines.append(f'  {"Variable":<14} {"c actual":>9}  {"Rango valido"}')
+    lines.append('  ' + sep2)
+    for j, (name, (lo, hi)) in enumerate(zip(var_names_decision, sens_c)):
+        lo_str = f'{lo:.2f}' if np.isfinite(lo) else '-inf'
+        hi_str = f'{hi:.2f}' if np.isfinite(hi) else '+inf'
+        lines.append(f'  {name:<14} {c[j]:>9.2f}  [{lo_str}, {hi_str}]')
+
+    lines.append('\n' + sep + '\n')
+    return '\n'.join(lines)
+
+
 # ── Export ─────────────────────────────────────────────────────────────────────
 
 def export_results(titulo, modelo, history, x, Z, tipo,

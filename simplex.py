@@ -214,3 +214,145 @@ class SimplexSolver:
             if bv is not None and n <= bv < n + ns:
                 s[bv - n] = self.tableau[i, -1]
         return s
+
+    # ── Dual values (shadow prices) ────────────────────────────────────────
+
+    def get_dual_values(self):
+        """
+        Returns the dual variables w* (shadow prices) for each constraint.
+        For MAX, read from the final Z row:
+          - <= constraint k  → slack col   n + slack_k          : w = T[-1, col]
+          - >= constraint k  → excess col  n + ns + excess_k    : w = -T[-1, col]
+          - = constraint k   → artif col   artif_base + artif_k : w = T[-1, col] - BIG_M
+        For MIN: values are negated because we solved -c internally.
+        """
+        if self.status != 'optimal':
+            return None
+        T   = self.tableau
+        m   = self.n_constraints
+        n   = self.n_vars
+        ns  = self.n_slack
+        ne  = self.n_excess
+        artif_base = n + ns + ne
+        ctypes = self.constraint_types
+
+        w = np.zeros(m)
+        slack_k = excess_k = artif_k = 0
+        for i, t in enumerate(ctypes):
+            if t == '<=':
+                col = n + slack_k
+                w[i] = T[-1, col]
+                slack_k += 1
+            elif t == '>=':
+                # Excess column has -1 in the constraint row → w = -T[-1, excess_col]
+                col = n + ns + excess_k
+                w[i] = -T[-1, col]
+                excess_k += 1
+                artif_k  += 1          # also consumes one artificial
+            else:                      # =
+                col = artif_base + artif_k
+                w[i] = T[-1, col] - BIG_M
+                artif_k += 1
+
+        if self.tipo == 'min':
+            w = -w
+        return w
+
+    # ── Sensitivity analysis — RHS (b) ────────────────────────────────────
+
+    def get_sensitivity_b(self):
+        """
+        Returns (lower, upper) bounds on each b_i such that the current
+        basis remains optimal.  Infinite bounds use ±np.inf.
+        The column of B^{-1} for constraint i is the corresponding
+        slack (<=) or artificial (>=/=) column in the body of the tableau
+        (rows 0..m-1, NOT the Z row).
+        """
+        if self.status != 'optimal':
+            return None
+        T   = self.tableau
+        m   = self.n_constraints
+        n   = self.n_vars
+        ns  = self.n_slack
+        ne  = self.n_excess
+        artif_base = n + ns + ne
+        ctypes = self.constraint_types
+
+        results = []
+        slack_k = artif_k = 0
+        for i, t in enumerate(ctypes):
+            if t == '<=':
+                col = n + slack_k
+                slack_k += 1
+            else:
+                col = artif_base + artif_k
+                artif_k += 1
+
+            # B^{-1} column for constraint i
+            binv_col = T[:m, col]
+            b_vals   = T[:m, -1]
+            b_i      = self.b[i]
+
+            delta_lo = delta_hi = np.inf
+            for r in range(m):
+                if abs(binv_col[r]) < 1e-10:
+                    continue
+                ratio = b_vals[r] / binv_col[r]
+                if binv_col[r] > 1e-10:
+                    delta_lo = min(delta_lo, ratio)
+                else:
+                    delta_hi = min(delta_hi, -ratio)
+
+            lower = b_i - delta_lo if delta_lo < np.inf else -np.inf
+            upper = b_i + delta_hi if delta_hi < np.inf else  np.inf
+            results.append((lower, upper))
+        return results
+
+    # ── Sensitivity analysis — objective coefficients (c) ─────────────────
+
+    def get_sensitivity_c(self):
+        """
+        Returns (lower, upper) bounds on each original decision-variable
+        coefficient c_j such that the current optimal basis is unchanged.
+        Only columns 0..n+ns-1 are used to avoid Big-M distortion.
+        """
+        if self.status != 'optimal':
+            return None
+        T   = self.tableau
+        m   = self.n_constraints
+        n   = self.n_vars
+        ns  = self.n_slack
+        # Columns to inspect (exclude excess/artificial = Big-M columns)
+        safe_cols = list(range(n + ns))
+
+        # Which columns are non-basic (not in basic_vars)?
+        basic_set = set(self.basic_vars)
+
+        results = []
+        for j in range(n):
+            if j not in basic_set:
+                # Non-basic: can increase by T[-1,j] before j enters basis
+                delta_hi = T[-1, j]   # currently ≥ 0 at optimum
+                results.append((-np.inf, self.c[j] + delta_hi))
+            else:
+                # Basic: find the row where j is basic
+                row_j = next(r for r in range(m) if self.basic_vars[r] == j)
+                lo = -np.inf
+                hi =  np.inf
+                for k in safe_cols:
+                    if k in basic_set:
+                        continue
+                    t_rk = T[row_j, k]
+                    t_zk = T[-1, k]
+                    if abs(t_rk) < 1e-10:
+                        continue
+                    ratio = t_zk / t_rk
+                    if t_rk > 1e-10:
+                        hi = min(hi, ratio)
+                    else:
+                        lo = max(lo, ratio)
+                # Convert delta to absolute c bounds
+                c_lo = self.c[j] - hi if hi < np.inf else -np.inf
+                c_hi = self.c[j] - lo if lo > -np.inf else  np.inf
+                results.append((c_lo, c_hi))
+        return results
