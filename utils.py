@@ -61,6 +61,161 @@ def format_tableau(tableau, var_names, basic_vars, iteration,
     return '\n'.join(lines)
 
 
+# ── Iteration detail formatter ────────────────────────────────────────────────
+
+def format_iteration_detail(snap, var_names, n_decision):
+    """
+    Returns a detailed step-by-step algorithmic explanation for a Simplex
+    snapshot (one iteration). Shows:
+      - Step 1: Z-row analysis → pivot column selection
+      - Step 2: Ratio test     → pivot row selection
+      - Step 3: Pivot operation summary
+    or an optimality / unbounded / infeasibility conclusion.
+    """
+    import numpy as np
+
+    T          = snap['tableau']
+    basic_vars = snap['basic_vars']
+    m          = len(basic_vars)
+    n_cols     = T.shape[1] - 1          # exclude b column
+    pivot_col  = snap.get('pivot_col')
+    pivot_row  = snap.get('pivot_row')
+    entering   = snap.get('entering')
+    leaving    = snap.get('leaving')
+    status     = snap.get('status', 'iterando')
+
+    SEP  = '─' * 64
+    SEP2 = '·' * 64
+    it   = snap['iteration']
+    lines = []
+
+    # ── Header ──
+    if it == 0:
+        lines += [SEP, '  FLUJO ALGORITMICO — TABLEAU INICIAL', SEP]
+    else:
+        lines += [SEP, f'  FLUJO ALGORITMICO — ITERACION {it}', SEP]
+
+    basic_set = set(basic_vars)
+
+    # ─ TERMINAL STATES ──────────────────────────────────────────────────────
+    if status == 'optimal':
+        lines += ['',
+                  '  CONCLUSION: SOLUCION OPTIMA ALCANZADA',
+                  '  ' + SEP2,
+                  '  Criterio de optimalidad (MAX): todos los costos',
+                  '  reducidos en la fila Z son >= 0.',
+                  '  No existe ninguna variable no basica que pueda',
+                  '  mejorar el valor de Z al entrar a la base.',
+                  '']
+        # List current Z row non-negative values for non-basic vars
+        nonbasic_info = []
+        for j in range(n_cols):
+            if j not in basic_set:
+                v = T[-1, j]
+                if abs(v) < 1e6:       # skip Big-M columns
+                    nonbasic_info.append(f'{var_names[j]}={_fv(v)}')
+        if nonbasic_info:
+            lines.append('  Costos reducidos no basicos: ' + '  '.join(nonbasic_info))
+        lines += ['', '  => La solucion en la base actual ES el optimo global.', '']
+        return '\n'.join(lines)
+
+    if status == 'unbounded':
+        lines += ['',
+                  '  CONCLUSION: PROBLEMA ILIMITADO (UNBOUNDED)',
+                  '  ' + SEP2,
+                  f'  La columna pivote ({var_names[pivot_col] if pivot_col is not None else "?"}) '
+                  f'no tiene ninguna entrada positiva.',
+                  '  No existe razon minima valida => Z puede crecer',
+                  '  indefinidamente => no hay solucion optima finita.', '']
+        return '\n'.join(lines)
+
+    # ─ NORMAL ITERATION ──────────────────────────────────────────────────────
+    if pivot_col is None:
+        return '\n'.join(lines)
+
+    # PASO 1 — Pivot column
+    lines += ['', '  PASO 1 — VARIABLE ENTRANTE (Columna Pivote)', '  ' + SEP2,
+              '  Regla: elegir la variable NO basica con el costo',
+              '  reducido mas negativo en la fila Z (criterio Dantzig).', '']
+
+    zrow = T[-1, :n_cols]
+    cand = [(j, zrow[j]) for j in range(n_cols)
+            if j not in basic_set and zrow[j] < -1e-6 and abs(zrow[j]) < 1e9]
+    cand_sorted = sorted(cand, key=lambda x: x[1])
+
+    lines.append('  Costos reducidos negativos encontrados:')
+    if not cand_sorted:
+        lines.append('    (ninguno — pero el solver lo detecto como no optimo)')
+    for j, v in cand_sorted:
+        marker = '  *** ELEGIDO ***' if j == pivot_col else ''
+        lines.append(f'    {var_names[j]:>6} : {_fv(v):>12}{marker}')
+
+    lines += ['',
+              f'  => Variable entrante: {entering}',
+              f'     (coeficiente mas negativo en fila Z = {_fv(zrow[pivot_col])})', '']
+
+    # PASO 2 — Ratio test
+    lines += [SEP2,
+              '  PASO 2 — VARIABLE SALIENTE (Prueba de la Razon Minima)', SEP2,
+              '  Regla: para cada fila i con a[i, col] > 0 calcular',
+              '  razon = b[i] / a[i, col]. La fila con razon MINIMA sale.', '']
+
+    col_vals = T[:m, pivot_col]
+    b_vals   = T[:m, -1]
+
+    lines.append(f'  {"Fila (VB)":<10} {"a[i,col]":>10}  {"b[i]":>8}  {"Razon b/a":>12}  Nota')
+    lines.append('  ' + '-' * 58)
+    valid_ratios = []
+    for r in range(m):
+        vb_name = var_names[basic_vars[r]]
+        a_val   = col_vals[r]
+        b_val   = b_vals[r]
+        if a_val > 1e-10:
+            ratio = b_val / a_val
+            valid_ratios.append((r, ratio))
+            marker = '  *** MINIMO ***' if r == pivot_row else ''
+            lines.append(f'  {vb_name:<10} {_fv(a_val):>10}  {_fv(b_val):>8}  {_fv(ratio):>12}{marker}')
+        else:
+            reason = 'negativo' if a_val < -1e-10 else 'cero'
+            lines.append(f'  {vb_name:<10} {_fv(a_val):>10}  {_fv(b_val):>8}  {"—":>12}  a <= 0, omitir')
+
+    if not valid_ratios:
+        lines += ['', '  No hay entradas positivas => problema ILIMITADO']
+    else:
+        min_ratio = min(r for _, r in valid_ratios)
+        lines += ['',
+                  f'  => Variable saliente: {leaving}',
+                  f'     (razon minima = {_fv(min_ratio)})', '']
+
+    # PASO 3 — Pivot operation
+    piv_elem = T[pivot_row, pivot_col]
+    lines += [SEP2,
+              '  PASO 3 — OPERACION PIVOTE (Eliminacion Gaussiana)', SEP2,
+              f'  Elemento pivote: a[{leaving}, {entering}] = {_fv(piv_elem)}', '',
+              f'  1. Dividir fila "{leaving}" entre {_fv(piv_elem)}',
+              f'     => fila "{leaving}" queda con 1 en columna {entering}.',
+              f'  2. Para cada otra fila i:',
+              f'     fila_i = fila_i - a[i,{entering}] * fila_{leaving}',
+              f'     => columna {entering} queda con 0 en todas las demas filas',
+              f'        (incluyendo la fila Z).',
+              '',
+              f'  => Resultado: {entering} ENTRA a la base, {leaving} SALE.',
+              '']
+
+    lines.append(SEP)
+    return '\n'.join(lines)
+
+
+def _fv(v):
+    """Format a single float compactly (no trailing zeros)."""
+    import numpy as np
+    if abs(v) < 1e-9:
+        return '0'
+    if abs(v - round(v)) < 1e-6:
+        return str(int(round(v)))
+    return f'{v:.4f}'.rstrip('0').rstrip('.')
+
+
 # ── Solution formatter ─────────────────────────────────────────────────────────
 
 def format_solution(x, Z, var_names_decision, tipo,

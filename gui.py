@@ -835,19 +835,24 @@ class AppGUI:
 
         ent = snap.get('entering') or '—'
         sal = snap.get('leaving')  or '—'
+        status_lbl = {
+            'optimal':        'OPTIMO',
+            'unbounded':      'ILIMITADO',
+            'infeasible':     'INFACTIBLE',
+            'max_iterations': 'MAX IT.',
+        }.get(snap['status'], 'iterando')
         self.ex_iter_lbl.configure(
-            text=f"Iteracion {snap['iteration']} de {total-1}  |  Entra: {ent}  |  Sale: {sal}")
+            text=f"Iteracion {snap['iteration']} / {total-1}  |  "
+                 f"Entra: {ent}  |  Sale: {sal}  |  Estado: {status_lbl}")
 
-        text = utils.format_tableau(
+        tableau_txt = utils.format_tableau(
             snap['tableau'], self.ex_varnames, snap['basic_vars'],
             snap['iteration'], snap['pivot_row'], snap['pivot_col'])
 
-        if snap['status'] == 'optimal':
-            text += '\n  => OPTIMO ALCANZADO\n'
-        elif snap.get('entering'):
-            text += f"\n  => Siguiente pivote: entra {ent}, sale {sal}\n"
+        detail_txt = utils.format_iteration_detail(
+            snap, self.ex_varnames, self.ex_solver.n_vars)
 
-        self._write_output(self.ex_text, text)
+        self._write_output(self.ex_text, tableau_txt + '\n' + detail_txt)
 
     def _ex_prev(self):
         if self.ex_iter > 0:
