@@ -737,15 +737,13 @@ class AppGUI:
         # Solution summary
         sol_card = self._card(parent, 'Resultado Final e Interpretacion')
         sol_card.pack(fill='x', pady=(0, 6))
-        sol_card.configure(height=130)
-        sol_card.pack_propagate(False)
 
-        self.ex_sol_lbl = tk.Label(
-            sol_card,
-            text="Presione 'Resolver Ejemplo' para ver la solucion optima.",
-            font=self.F_BODY, fg=self.C_MUTED, bg=self.C_CARD,
-            wraplength=700, justify='left')
-        self.ex_sol_lbl.pack(padx=12, pady=12, anchor='w')
+        self.ex_sol_frame = tk.Frame(sol_card, bg=self.C_CARD)
+        self.ex_sol_frame.pack(fill='x', padx=12, pady=10)
+        tk.Label(self.ex_sol_frame,
+                 text="Presione 'Resolver Ejemplo' para ver la solucion optima.",
+                 font=self.F_BODY, fg=self.C_MUTED, bg=self.C_CARD
+                 ).pack(anchor='w')
 
         # Dual / sensitivity analysis card
         dual_card = self._card(parent, 'Analisis Dual y Sensibilidad')
@@ -781,31 +779,7 @@ class AppGUI:
 
             self.ex_iter = len(self.ex_history) - 1
             self._show_ex_iter()
-
-            # Build interpretation line
-            parts = [f'x{i+1}={x[i]:.0f}' for i in range(n) if x[i] > 1e-6]
-            zero_parts = [f'x{i+1}=0' for i in range(n) if x[i] <= 1e-6]
-            val_str = '  |  '.join(parts + zero_parts)
-            sol_lines = [
-                f'Solucion Optima:  {val_str}',
-                f'Ganancia Maxima:  Z* = ${Z:.2f}',
-                '',
-                'Interpretacion: AgroMix debe asignar '
-                + ', '.join(f'{x[i]:.0f} kg de {p["variables"][i]}'
-                            for i in range(n) if x[i] > 1e-6)
-                + f' para obtener una ganancia maxima de ${Z:.2f}/dia.',
-            ]
-            if slacks.size > 0:
-                ns = solver.n_slack
-                slack_names = p['restricciones_nombres']
-                leq_idx = [i for i, t in enumerate(ctypes) if t == '<=']
-                slack_info = '  |  '.join(
-                    f's{k+1}={slacks[k]:.1f} ({slack_names[leq_idx[k]]})'
-                    for k in range(ns))
-                sol_lines.append(f'\nHolguras: {slack_info}')
-            self.ex_sol_lbl.configure(
-                text='\n'.join(sol_lines),
-                font=('Segoe UI', 10, 'bold'), fg=self.C_GREEN)
+            self._build_sol_result(x, Z, slacks, solver, p, ctypes, n)
 
             # Dual / sensitivity analysis
             if self.ex_dual_text is not None:
@@ -820,10 +794,153 @@ class AppGUI:
                     p['tipo'])
                 self._write_output(self.ex_dual_text, dual_txt)
         else:
-            self.ex_sol_lbl.configure(
-                text=f'Estado: {status}', fg=self.C_RED)
+            for w in self.ex_sol_frame.winfo_children():
+                w.destroy()
+            tk.Label(self.ex_sol_frame, text=f'Estado: {status}',
+                     font=self.F_BOLD, fg=self.C_RED, bg=self.C_CARD
+                     ).pack(anchor='w')
             if self.ex_dual_text is not None:
                 self._write_output(self.ex_dual_text, '')
+
+    # ── Rich result card ───────────────────────────────────────────────────────
+    def _build_sol_result(self, x, Z, slacks, solver, p, ctypes, n):
+        f = self.ex_sol_frame
+        for w in f.winfo_children():
+            w.destroy()
+
+        # ── Z* banner ──────────────────────────────────────────────────────
+        banner = tk.Frame(f, bg='#1b5e20', pady=6)
+        banner.pack(fill='x', pady=(0, 10))
+        tk.Label(banner,
+                 text=f'  GANANCIA MAXIMA DIARIA:   Z* = ${Z:,.2f} / dia  ',
+                 font=('Segoe UI', 13, 'bold'), fg='white', bg='#1b5e20'
+                 ).pack(side='left', padx=10)
+        its = len(solver.history) - 1
+        tk.Label(banner,
+                 text=f'Convergencia en {its} iteraciones  ',
+                 font=self.F_SMALL, fg='#a5d6a7', bg='#1b5e20'
+                 ).pack(side='right', padx=10)
+
+        # ── Two-column layout: variables left, resources right ──────────────
+        cols = tk.Frame(f, bg=self.C_CARD)
+        cols.pack(fill='x')
+
+        left_col  = tk.Frame(cols, bg=self.C_CARD)
+        right_col = tk.Frame(cols, bg=self.C_CARD)
+        left_col.pack(side='left', fill='both', expand=True, padx=(0, 8))
+        right_col.pack(side='left', fill='both', expand=True)
+
+        # ── Left: plan de produccion ────────────────────────────────────────
+        tk.Label(left_col, text='PLAN DE PRODUCCION OPTIMO',
+                 font=self.F_BOLD, fg=self.C_DARK, bg=self.C_CARD
+                 ).pack(anchor='w', pady=(0, 4))
+
+        max_val = max(float(xi) for xi in x) if max(x) > 0 else 1
+        BAR_W = 18   # max bar chars
+        for i in range(n):
+            row = tk.Frame(left_col, bg=self.C_CARD)
+            row.pack(fill='x', pady=1)
+            val = float(x[i])
+            used = val > 1e-6
+            bar_len = max(1, int(round(val / max_val * BAR_W))) if used else 0
+            bar = '█' * bar_len + '░' * (BAR_W - bar_len)
+            color = self.C_GREEN if used else self.C_MUTED
+            var_short = f'x{i+1}'
+            desc = p['variables'][i]
+            tk.Label(row, text=f'{var_short}',
+                     font=self.F_BOLD, fg=color, bg=self.C_CARD, width=3
+                     ).pack(side='left')
+            tk.Label(row, text=f'{val:>6.0f} kg',
+                     font=('Courier New', 9, 'bold'), fg=color, bg=self.C_CARD, width=9
+                     ).pack(side='left')
+            tk.Label(row, text=bar,
+                     font=('Courier New', 8), fg=color, bg=self.C_CARD
+                     ).pack(side='left', padx=(4, 6))
+            tk.Label(row, text=desc,
+                     font=self.F_SMALL, fg=self.C_MUTED if not used else self.C_TXT,
+                     bg=self.C_CARD
+                     ).pack(side='left')
+
+        # ── Right: estado de recursos ───────────────────────────────────────
+        tk.Label(right_col, text='ESTADO DE RECURSOS',
+                 font=self.F_BOLD, fg=self.C_DARK, bg=self.C_CARD
+                 ).pack(anchor='w', pady=(0, 4))
+
+        ns = solver.n_slack
+        leq_idx = [i for i, t in enumerate(ctypes) if t == '<=']
+        geq_idx = [i for i, t in enumerate(ctypes) if t == '>=']
+        eq_idx  = [i for i, t in enumerate(ctypes) if t == '=']
+        dual_vals = solver.get_dual_values()
+
+        for k in range(ns):
+            ci = leq_idx[k]
+            avail  = p['b'][ci]
+            holgura = slacks[k] if slacks.size > k else 0
+            used_v  = avail - holgura
+            pct = int(round(used_v / avail * 100)) if avail > 0 else 0
+            active = holgura < 1e-6
+            color  = self.C_RED if active else self.C_GREEN
+            tag    = 'AGOTADO — recurso limitante' if active else f'libre: {holgura:.0f} kg'
+            rrow = tk.Frame(right_col, bg=self.C_CARD)
+            rrow.pack(fill='x', pady=2)
+            tk.Label(rrow, text=f'{p["restricciones_nombres"][ci][:22]:<22}',
+                     font=self.F_SMALL, fg=self.C_TXT, bg=self.C_CARD
+                     ).pack(side='left')
+            tk.Label(rrow, text=f'{used_v:.0f}/{avail:.0f} kg  ({pct}%)',
+                     font=('Segoe UI', 9, 'bold'), fg=color, bg=self.C_CARD, width=18
+                     ).pack(side='left')
+            tk.Label(rrow, text=tag,
+                     font=self.F_SMALL, fg=color, bg=self.C_CARD
+                     ).pack(side='left')
+
+        for k, ci in enumerate(geq_idx):
+            w_val = dual_vals[ci]
+            active = abs(w_val) > 1e-6
+            color  = self.C_RED if active else self.C_GREEN
+            tag    = 'ACTIVA — restriccion exigida' if active else 'con excedente'
+            rrow = tk.Frame(right_col, bg=self.C_CARD)
+            rrow.pack(fill='x', pady=2)
+            tk.Label(rrow, text=f'{p["restricciones_nombres"][ci][:22]:<22}',
+                     font=self.F_SMALL, fg=self.C_TXT, bg=self.C_CARD
+                     ).pack(side='left')
+            tk.Label(rrow, text=f'>= {p["b"][ci]:.0f} kg',
+                     font=('Segoe UI', 9, 'bold'), fg=color, bg=self.C_CARD, width=18
+                     ).pack(side='left')
+            tk.Label(rrow, text=tag,
+                     font=self.F_SMALL, fg=color, bg=self.C_CARD
+                     ).pack(side='left')
+
+        for ci in eq_idx:
+            rrow = tk.Frame(right_col, bg=self.C_CARD)
+            rrow.pack(fill='x', pady=2)
+            tk.Label(rrow, text=f'{p["restricciones_nombres"][ci][:22]:<22}',
+                     font=self.F_SMALL, fg=self.C_TXT, bg=self.C_CARD
+                     ).pack(side='left')
+            tk.Label(rrow, text=f'= {p["b"][ci]:.0f} kg  (100%)',
+                     font=('Segoe UI', 9, 'bold'), fg=self.C_ACCENT, bg=self.C_CARD, width=18
+                     ).pack(side='left')
+            tk.Label(rrow, text='capacidad plena',
+                     font=self.F_SMALL, fg=self.C_ACCENT, bg=self.C_CARD
+                     ).pack(side='left')
+
+        # ── Conclusion ──────────────────────────────────────────────────────
+        usados = ', '.join(
+            f'{x[i]:.0f} kg de {p["variables"][i]}'
+            for i in range(n) if x[i] > 1e-6)
+        conclusion = (
+            f'AgroMix debe asignar {usados} para maximizar '
+            f'su ganancia neta a ${Z:,.2f}/dia. '
+            f'El Nitrogeno es el recurso limitante (agotado); '
+            f'el Fosforo no se usa porque los productos mas rentables '
+            f'dependen exclusivamente de Nitrogeno.'
+        )
+        sep_line = tk.Frame(f, bg='#e0e0e0', height=1)
+        sep_line.pack(fill='x', pady=(10, 6))
+        tk.Label(f, text='CONCLUSION', font=self.F_BOLD,
+                 fg=self.C_DARK, bg=self.C_CARD).pack(anchor='w')
+        tk.Label(f, text=conclusion, font=self.F_BODY,
+                 fg=self.C_TXT, bg=self.C_CARD,
+                 wraplength=750, justify='left').pack(anchor='w', pady=(2, 6))
 
     # ── Navigation ─────────────────────────────────────────────────────────────
     def _show_ex_iter(self):
